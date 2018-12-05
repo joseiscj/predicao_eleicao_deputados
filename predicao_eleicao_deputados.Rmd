@@ -1,0 +1,245 @@
+---
+title: "Predição de Votação de Deputados"
+author: "José Ivan Silva da Cruz Júnior"
+date: "5 de dezembro de 2018"
+output: html_document
+---
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(caret)
+library(elasticnet)
+```
+
+Inicialmente, excluiremos as colunas ano, sequencial _candidato, nome e cargo, tidas como inúteis para a realização da predição.
+
+```{r}
+eleicoes <- read.csv("train.csv") %>% select(-sequencial_candidato, -nome, -ano, -cargo)
+
+coletaMetricas <- function (modelo, teste){
+  teste$predicao <- predict(modelo, teste)
+
+  TP <- teste %>% filter(situacao == "eleito", predicao == "eleito") %>% nrow()
+  TN <- teste %>% filter(situacao== "nao_eleito" , predicao == "nao_eleito" ) %>% nrow()
+  FP <- teste %>% filter(situacao == "nao_eleito" , predicao == "eleito") %>% nrow() 
+  FN <- teste %>% filter(situacao == "eleito", predicao == "nao eleito" ) %>% nrow()
+  
+  accuracy <- (TP + TN)/(TP + TN + FP + FN) 
+  precision <- TP / (TP + FP)
+  recall <- TP / (TP + FN)
+  f.measure <- 2 * precision * recall / (precision + recall)
+  
+  print("ACCURACY:")
+  print(accuracy)
+  print("PRECISION:")
+  print(precision)
+  print("RECALL:")
+  print(recall)
+  print("F-MEASURE:")
+  print(f.measure)
+  
+}
+```
+
+Questão 1) Há desbalanceamento das classes (isto é, uma classe tem muito mais instâncias que outra)? Em que proporção? Quais efeitos colaterais o desbalanceamento de classes pode causar no classificador? Como você poderia tratar isso? 
+
+Sim, pois, como veremos a seguir, cerca de 87% dos candidatos não foram eleitos. O efeito colateral que temos, a partir disso, é o enviesamento do nosso classificador, que pode aprender com a classe que possui mais ocorrêcias (no caso, "não eleito") e tender a fazer a classificação de exemplos não conhecidos como sendo "não eleito".
+
+```{r}
+situation <- ggplot(eleicoes, aes(x = situacao)) +  
+        geom_bar(aes(y = (..count..)/sum(..count..))) + 
+        geom_text(aes(y = ((..count..)/sum(..count..)), label = scales::percent((..count..)/sum(..count..))), stat = "count", vjust = -0.25) + labs(title = "Proporção da situação final dos candidatos", y = "Proporção", x = "Situação do candidato")
+
+situation
+```
+
+Questão 2) Treine: um modelo de KNN, regressão logística, uma árvore de decisão e um modelo de adaboost. Tune esses modelos usando validação cruzada e controle overfitting se necessário, considerando as particularidades de cada modelo.
+
+Primeiro, realizamos a divisão entre treino e teste.
+```{r}
+dataP <- createDataPartition(y = eleicoes$situacao, p=0.75, list = FALSE)
+treino <- eleicoes[dataP, ]
+teste <- eleicoes[-dataP, ]
+```
+
+Agora, definimos a validação cruzada do modelo a ser gerado e definimos undersampling para tornar as classes balanceadas.
+
+```{r}
+control <- trainControl(method = "cv", 
+                     number = 10, 
+                     verboseIter = FALSE,
+                     sampling = "down")
+
+adaboost.control <- trainControl(sampling = "down")
+
+form <- as.formula(situacao ~ .)
+```
+
+Regressão Logística:
+```{r}
+logistic.regression <- caret::train(situacao ~ .,
+                 data = treino,
+                 method="glm",
+                trControl = control,
+                 family="binomial",
+                 na.action = na.omit)
+
+coletaMetricas(logistic.regression, treino)
+```
+
+Árvore de decisão:
+  Para controlar overfitting foram usados os parâmetros de complexidade e a profundidade máxima da árvore.
+
+```{r}
+#arvore.decisao <- caret::train(formula,
+#                data=treino,
+#                 method = "rpart",
+#                 trControl = control,
+#                cp=0.001,  # parâmetro de complexidade
+#                 maxdepth=20)
+
+#coletaMetricas(arvore.decisao, treino)
+```
+
+Enxergando o resultado, podemos ver que os resultados preliminares para os dois modelos mostram uma precisão no treino considerada baixa (perto da casa dos 40% e dos 50%), indicando que aproximadamente metade dos candidatos que foram classificados como eleitos foram eleitos de fato.
+
+Eliminamos alguns atributos categóricos considerados pouco importantes buscando melhorar o modelo e viabilizar a construção de um modelo Adaboost.
+
+```{r}
+filtered <- eleicoes %>% select(-uf, -partido, -sexo, -grau, -estado_civil, -ocupacao)
+
+dataPtt <- createDataPartition(y = filtered$situacao, p = 0.75, list = FALSE)
+
+treino2 <- filtered[dataPtt, ]
+teste2 <- filtered[-dataPtt, ]
+
+regressao.logistica.2 <- caret::train(situacao ~ .,
+                 data = treino2,
+                 method="glm",
+                trControl = control,
+                 family="binomial",
+                 na.action = na.omit)
+```
+
+```{r}
+#arvore.decisao.2 <- caret::train(formula,
+#                 data=treino2,
+#                 method = "rpart",
+#                 trControl = control,
+#                 cp=0.001,  # parâmetro de complexidade
+#                 maxdepth=20)
+
+```
+```{r}
+#adaboost <- caret::train(formula,
+#                data=treino2,
+#                trControl = control,
+#                method = "adaboost")
+```
+Questão 3) Reporte precision, recall e f-measure no treino e validação. Há uma grande diferença de desempenho no treino/validação? Como você avalia os resultados? Justifique sua resposta.
+
+Análise: Regressão Logística
+Treino:
+
+Vemos que o modelo apresentou uma alta acurácia, cerca de 90%. A precisão foi de aproximdamente 53%, onde vemos que muitos candidatos foram classificados como “eleitos” mesmo sem serem. O recall foi 100%, onde todos os candidatos que foram eleitos forem corretamente preditos pelo modelo. E o F-Measure de 70%, que podemos considerar alto.
+
+```{r}
+coletaMetricas(regressao.logistica.2, treino2)
+```
+
+Teste:
+
+Podemos ver que o teste apresenta resultados bem parecidos com o treino, indicando um bom sinal.
+Vemos também uma grande melhoria na precisão quando comparado ao primeiro modelo com todos os atributos.
+```{r}
+coletaMetricas(regressao.logistica.2, teste2)
+```
+
+Análise: Árvore de decisão
+
+Treino:
+
+Vemos agora que, com menos atributos, a árvore de decisão apresentou resultado piores que a regressão logística, apesar da pouca dferença. A acurácia manteve-se elevada e a precisão próxima dos 50%. O recall manteve-se em 100%.
+```{r}
+#coletaMetricas(arvore.decisao.2, treino2)
+```
+
+Teste:
+Assim como na regressão logística, tivemos um desempenho parecido do treino no teste.
+```{r}
+#coletaMetricas(arvore.decisao.2, teste2)
+```
+
+Análise - Adaboost:
+Treino:
+
+Agora o desempenho um pouco superior ao da regressão logística e consequentemente superior ao da árvore de decisão. A acurácia da regressão logística ainda foi um pouco superior ao do modelo do adaboost, mas a precisão deste último cresceu para um pouco mais de 50%. O Recall manteve-se em 100% assim como nos modelos anteriores.
+```{r}
+#coletaMetricas(adaboost, treino2)
+```
+
+Teste:
+
+Para o teste tivemos um desempenho parecido com o observado no treino, porém com números levemente inferiores
+
+```{r}
+#coletaMetricas(adaboost, teste2)
+```
+
+Questão 4) Interprete as saídas dos modelos. Quais atributos parecem ser mais importantes de acordo com cada modelo?
+
+Regressão Logística:
+
+Como podemos observar, de acordo com o nosso modelo, os recursos de pessoas físicas e o total de despesas, além dos recursos de pessoas jurídicas são os atributos mais importantes.
+
+```{r}
+ggplot(varImp(regressao.logistica.2)) +
+  geom_bar(stat="identity") +
+  labs(title="Importância das variáveis - Regressão Logística", y="Importância", x="Variável")
+```
+
+Árvore de decisão:
+
+O total de despesa e o total de receitas aparecem como os atributos mais importantes.
+
+```{r}
+#ggplot(varImp(arvore.decisao.2)) +
+#  geom_bar(stat="identity") +
+#  labs(title="Importância das variáveis - Árvore de decisão", y="Importância", x="Variável")
+```
+
+Adaboost:
+
+Total de despesa e total de receitas aparecem como os atributos mais importantes. 
+```{r}
+#ggplot(varImp(adaboost)) +
+#  geom_bar(stat="identity") +
+#  labs(title="Importância das variáveis - Adaboost", y="Importância", x="Variável")
+```
+
+
+Questão 5) Envie seus melhores modelos à competição do Kaggle. Faça pelo menos uma submissão.
+
+Regressão Logística:
+```{r}
+test.df <- read.csv("test.csv", encoding = "UTF-8")
+
+predict <- predict(regressao.logistica.2, test.df)
+
+df.submission <- data.frame(Id = test.df$sequencial_candidato, Predicted= predict)
+
+write.csv(df.submission, "logistic_regression_jv.csv", row.names = FALSE)
+
+```
+
+Adaboost:
+```{r}
+#predict <- predict(adaboost, test.df)
+
+#df.submission <- data.frame(ID = test.df$sequencial_candidato, prediction = predict)
+
+#write.csv(df.submission, "adaboost_jv.csv", row.names = FALSE)
+```
